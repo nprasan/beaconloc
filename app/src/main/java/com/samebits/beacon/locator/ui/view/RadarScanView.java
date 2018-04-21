@@ -50,7 +50,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class RadarScanView extends View implements SensorEventListener {
-    private final static int RADAR_RADIS_VISION_METERS = 15;
+    private final static int RADAR_RADIS_VISION_METERS = 8;
     private static String mMetricDisplayFormat = "%.0fm";
     private static String mEnglishDisplayFormat = "%.0fft";
     private static float METER_PER_FEET = 0.3048f;
