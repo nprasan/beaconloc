@@ -279,7 +279,7 @@ public class RadarScanView extends View {
         boolean updatePos = false;
         double[] dist = new double[4];
         int distIndex = 0;
-        if(beacons.size() > 0)
+        if(beacons.size() == 4)
             updatePos = true;
 
         while (iterator.hasNext()) {
