@@ -26,10 +26,7 @@ import android.graphics.Paint.Align;
 import android.graphics.Paint.Style;
 import android.graphics.Rect;
 import android.graphics.drawable.BitmapDrawable;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
+import android.os.Environment;
 import android.os.SystemClock;
 import android.support.v4.content.ContextCompat;
 import android.util.AttributeSet;
@@ -39,31 +36,21 @@ import android.widget.TextView;
 
 import com.samebits.beacon.locator.R;
 import com.samebits.beacon.locator.model.DetectedBeacon;
-import com.samebits.beacon.locator.util.AngleLowpassFilter;
+import com.samebits.beacon.locator.util.NeuralNet;
 
 import org.altbeacon.beacon.Beacon;
-
-import java.text.DecimalFormat;
+import java.io.*;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Random;
 
-public class RadarScanView extends View implements SensorEventListener {
-    private final static int RADAR_RADIS_VISION_METERS = 8;
-    private static String mMetricDisplayFormat = "%.0fm";
-    private static String mEnglishDisplayFormat = "%.0fft";
-    private static float METER_PER_FEET = 0.3048f;
-    private static float FEET_PER_METER = 3.28084f;
+public class RadarScanView extends View {
 
     private float mDistanceRatio = 1.0f;
-    private float[] mLastAccelerometer = new float[3];
-    private float[] mLastMagnetometer = new float[3];
-    private boolean mLastAccelerometerSet = false;
-    private boolean mLastMagnetometerSet = false;
-    private float[] mOrientation = new float[3];
-    private AngleLowpassFilter angleLowpassFilter = new AngleLowpassFilter();
-    private float mLast_bearing;
     private Context mContext;
     private WindowManager mWindowManager;
     private Map<String, DetectedBeacon> mBeacons = new LinkedHashMap();
@@ -74,6 +61,10 @@ public class RadarScanView extends View implements SensorEventListener {
     private Paint mErasePaint;
     private Bitmap mBlip;
     private boolean mUseMetric;
+    private NeuralNet neuralNet = new NeuralNet();
+    private File csvFile;
+    private String dataFolder = "/beaconData";
+    private String filePrefix = "data";
     /**
      * Used to draw the animated ring that sweeps out from the center
      */
@@ -103,6 +94,14 @@ public class RadarScanView extends View implements SensorEventListener {
      */
     private long mBlipTime;
 
+    private long prevTime;
+    private Random r1;
+    private int[] blipXPos, blipYPos;
+    private int pos;
+    private int currentPosition;
+    private int fileNumber;
+    private int numValues;
+
     public RadarScanView(Context context) {
         this(context, null);
     }
@@ -123,7 +122,7 @@ public class RadarScanView extends View implements SensorEventListener {
 
         mGridPaint.setAntiAlias(true);
         mGridPaint.setStyle(Style.STROKE);
-        mGridPaint.setStrokeWidth(2.0f);
+        mGridPaint.setStrokeWidth(4.0f);
         mGridPaint.setTextSize(16.0f);
         mGridPaint.setTextAlign(Align.CENTER);
 
@@ -164,12 +163,32 @@ public class RadarScanView extends View implements SensorEventListener {
 
         mBlip = ((BitmapDrawable) ContextCompat.getDrawable(context, R.drawable.ic_location_on_black_24dp)).getBitmap();
 
+        blipXPos = new int[16];
+        blipYPos = new int[16];
+        prevTime = 0;
+        pos = 0;
+        r1 = new Random();
+
+        File f = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "beaconData");
+        if (!f.exists()) {
+            f.mkdirs();
+        }
+
+        File[] files = f.listFiles();
+        fileNumber = 0;
+        for(int i = 0; i < files.length; i++){
+            String name = files[i].getName();
+            int num = Integer.parseInt(name.substring(filePrefix.length(), name.length()-4));
+            if(fileNumber < num)
+                fileNumber = num;
+        }
+        System.out.println(fileNumber);
+
     }
 
     /**
      * Sets the view that we will use to report distance
-     *
-     * @param t The text view used to report distance
+     *     * @param t The text view used to report distance
      */
     public void setDistanceView(TextView t) {
         mInfoView = t;
@@ -180,14 +199,23 @@ public class RadarScanView extends View implements SensorEventListener {
         super.onDraw(canvas);
         int center = getWidth() / 2;
         int radius = center - 8;
+        int x0 = 150;
+        int y0 = 20;
+        int gridSize = (getWidth() - 2*x0)/4;
 
-        // Draw the rings
+        int idx = 0;
+        for(int i = 3; i >= 0; i--)
+        {
+            int ypos = y0 + (gridSize/2) + (i*gridSize);
+            for(int j = 0; j < 4; j++)
+            {
+                int xpos = x0 + (gridSize/2) + (j*gridSize);
+                blipXPos[idx] = xpos;
+                blipYPos[idx] = ypos;
+                idx++;
+            }
+        }
         final Paint gridPaint = mGridPaint;
-        canvas.drawCircle(center, center, radius, gridPaint);
-        canvas.drawCircle(center, center, radius * 3 / 4, gridPaint);
-        canvas.drawCircle(center, center, radius >> 1, gridPaint);
-        canvas.drawCircle(center, center, radius >> 2, gridPaint);
-
         int blipRadius = (int) (mDistanceRatio * radius);
 
         final long now = SystemClock.uptimeMillis();
@@ -213,15 +241,20 @@ public class RadarScanView extends View implements SensorEventListener {
             postInvalidate();
         }
 
-        // Draw horizontal and vertical lines
-        canvas.drawLine(center, center - (radius >> 2) + 6, center, center - radius - 6, gridPaint);
-        canvas.drawLine(center, center + (radius >> 2) - 6, center, center + radius + 6, gridPaint);
-        canvas.drawLine(center - (radius >> 2) + 6, center, center - radius - 6, center, gridPaint);
-        canvas.drawLine(center + (radius >> 2) - 6, center, center + radius + 6, center, gridPaint);
+        //draw horizontal lines
+        canvas.drawLine(x0, y0 + 0*gridSize, x0 + 4*gridSize, y0 + 0*gridSize, gridPaint);
+        canvas.drawLine(x0, y0 + 1*gridSize, x0 + 4*gridSize, y0 + 1*gridSize, gridPaint);
+        canvas.drawLine(x0, y0 + 2*gridSize, x0 + 4*gridSize, y0 + 2*gridSize, gridPaint);
+        canvas.drawLine(x0, y0 + 3*gridSize, x0 + 4*gridSize, y0 + 3*gridSize, gridPaint);
+        canvas.drawLine(x0, y0 + 4*gridSize, x0 + 4*gridSize, y0 + 4*gridSize, gridPaint);
 
-        // Draw X in the center of the screen
-        canvas.drawLine(center - 4, center - 4, center + 4, center + 4, gridPaint);
-        canvas.drawLine(center - 4, center + 4, center + 4, center - 4, gridPaint);
+        //draw vertical lines
+        canvas.drawLine(x0 + 0*gridSize, y0 , x0 + 0*gridSize, y0 + 4*gridSize, gridPaint);
+        canvas.drawLine(x0 + 1*gridSize, y0 , x0 + 1*gridSize, y0 + 4*gridSize, gridPaint);
+        canvas.drawLine(x0 + 2*gridSize, y0 , x0 + 2*gridSize, y0 + 4*gridSize, gridPaint);
+        canvas.drawLine(x0 + 3*gridSize, y0 , x0 + 3*gridSize, y0 + 4*gridSize, gridPaint);
+        canvas.drawLine(x0 + 4*gridSize, y0 , x0 + 4*gridSize, y0 + 4*gridSize, gridPaint);
+
 
         if (mHaveDetected) {
 
@@ -229,116 +262,64 @@ public class RadarScanView extends View implements SensorEventListener {
             long blipDifference = now - mBlipTime;
             gridPaint.setAlpha(255 - (int) ((128 * blipDifference) >> 10));
 
-            double bearingToTarget = mLast_bearing;
-            double drawingAngle = Math.toRadians(bearingToTarget) - (Math.PI / 2);
-            float cos = (float) Math.cos(drawingAngle);
-            float sin = (float) Math.sin(drawingAngle);
-
-            addText(canvas, getRatioDistanceText(0.25f), center, center + (radius >> 2));
-            addText(canvas, getRatioDistanceText(0.5f), center, center + (radius >> 1));
-            addText(canvas, getRatioDistanceText(0.75f), center, center + radius * 3 / 4);
-            addText(canvas, getRatioDistanceText(1.0f), center, center + radius);
-
             for (Map.Entry<String, DetectedBeacon> entry : mBeacons.entrySet()) {
                 //String key = entry.getKey();
                 DetectedBeacon dBeacon = entry.getValue();
-                System.out.println("value: " + dBeacon);
-
-                // drawing the beacon
-                if (((System.currentTimeMillis() - dBeacon.getTimeLastSeen()) / 1000 < 5)) {
-                    canvas.drawBitmap(mBlip, center + (cos * distanceToPix(dBeacon.getDistance())) - 8,
-                            center + (sin * distanceToPix(dBeacon.getDistance())) - 8, gridPaint);
-                }
+                //System.out.println("value: " + dBeacon);
             }
+
+            canvas.drawBitmap(mBlip, blipXPos[currentPosition]-mBlip.getWidth()/2, blipYPos[currentPosition]-mBlip.getWidth()/2, gridPaint);
 
             gridPaint.setAlpha(255);
         }
     }
 
-    private String getRatioDistanceText(float ringRation) {
-        return new DecimalFormat("##0.00").format(RADAR_RADIS_VISION_METERS * mDistanceRatio * ringRation);
-    }
-
-    /**
-     * max radar range is 15 meters
-     *
-     * @param distance
-     * @return distance in px
-     */
-    private float distanceToPix(double distance) {
-        int center = getWidth() / 2;
-        int radius = center - 8;
-        return Math.round((radius * distance) / RADAR_RADIS_VISION_METERS * mDistanceRatio);
-    }
-
-    private void addText(Canvas canvas, String str, int x, int y) {
-        mGridPaint.getTextBounds(str, 0, str.length(), mTextBounds);
-        mTextBounds.offset(x - (mTextBounds.width() >> 1), y);
-        mTextBounds.inset(-2, -2);
-        canvas.drawRect(mTextBounds, mErasePaint);
-        canvas.drawText(str, x, y, mGridPaint);
-    }
-
-
-    /**
-     * Update state to reflect whether we are using metric or standard units.
-     *
-     * @param useMetric True if the display should use metric units
-     */
-    public void setUseMetric(boolean useMetric) {
-        mUseMetric = useMetric;
-        if (mHaveDetected) {
-            // TODO
-        }
-    }
-
-    @Override
-    public void onSensorChanged(SensorEvent event) {
-        calcBearing(event);
-    }
-
-    private synchronized void calcBearing(SensorEvent event) {
-
-        if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            System.arraycopy(event.values, 0, mLastAccelerometer, 0, event.values.length);
-            mLastAccelerometerSet = true;
-        } else if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
-            System.arraycopy(event.values, 0, mLastMagnetometer, 0, event.values.length);
-            mLastMagnetometerSet = true;
-        }
-        if (mLastAccelerometerSet && mLastMagnetometerSet) {
-
-            /* Create rotation Matrix */
-            float[] rotationMatrix = new float[9];
-            if (SensorManager.getRotationMatrix(rotationMatrix, null,
-                    mLastAccelerometer, mLastMagnetometer)) {
-                SensorManager.getOrientation(rotationMatrix, mOrientation);
-
-                float azimuthInRadians = mOrientation[0];
-
-                angleLowpassFilter.add(azimuthInRadians);
-
-                mLast_bearing = (float) (Math.toDegrees(angleLowpassFilter.average()) + 360) % 360;
-
-                postInvalidate();
-
-                //Log.d(Constants.TAG, "orientation bearing: " + mLast_bearing);
-
-            }
-        }
-    }
-
-    @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy) {
-
-    }
-
     private void insertBeacons(Collection<Beacon> beacons) {
         Iterator<Beacon> iterator = beacons.iterator();
+        boolean updatePos = false;
+        double[] dist = new double[4];
+        int distIndex = 0;
+        if(beacons.size() > 0)
+            updatePos = true;
+
         while (iterator.hasNext()) {
             DetectedBeacon dBeacon = new DetectedBeacon(iterator.next());
             dBeacon.setTimeLastSeen(System.currentTimeMillis());
             this.mBeacons.put(dBeacon.getId(), dBeacon);
+            if(updatePos) {
+                int dBeaconMinorId = dBeacon.getId3().toInt();
+                if(dBeaconMinorId > 64000 && dBeaconMinorId < 64006) {
+                    distIndex = dBeaconMinorId - 64001;
+                    if(distIndex == 4)
+                        distIndex = 3;
+                    dist[distIndex] = dBeacon.getDistance()*3;
+                    System.out.println(distIndex + ":" + dist[distIndex]);
+                }
+            }
+        }
+
+        if(updatePos){
+            String fileContents = "";
+            for(int i = 0; i < 4; i++)
+                fileContents += dist[i] + ",";
+
+            currentPosition = neuralNet.evaluatePosition(dist);
+
+            fileContents += currentPosition + "\n";
+
+            try {
+                FileOutputStream outputStream = new FileOutputStream(csvFile, true);
+                OutputStreamWriter writer = new OutputStreamWriter(outputStream);
+                writer.append(fileContents);
+                writer.close();
+                outputStream.close();
+                numValues = numValues + 1;
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+
+
+            updateDistances();
         }
     }
 
@@ -346,7 +327,7 @@ public class RadarScanView extends View implements SensorEventListener {
 
         insertBeacons(beacons);
 
-        updateDistances();
+        //updateDistances();
 
         updateBeaconsInfo(beacons);
 
@@ -354,7 +335,7 @@ public class RadarScanView extends View implements SensorEventListener {
     }
 
     private void updateBeaconsInfo(final Collection<Beacon> beacons) {
-        mInfoView.setText(String.format(getResources().getString(R.string.text_scanner_found_beacons_size), beacons.size()));
+        mInfoView.setText(beacons.size() + " beacons. Valid Samples = " + numValues);
     }
 
     /**
@@ -366,21 +347,13 @@ public class RadarScanView extends View implements SensorEventListener {
         }
     }
 
-    private void updateDistanceText(double distanceM) {
-        String displayDistance;
-        if (mUseMetric) {
-            displayDistance = String.format(mMetricDisplayFormat, distanceM);
-        } else {
-            displayDistance = String.format(mEnglishDisplayFormat, distanceM * FEET_PER_METER);
-        }
-        mInfoView.setText(displayDistance);
-    }
-
     /**
      * Turn on the sweep animation starting with the next draw
      */
     public void startSweep() {
-        mInfoView.setText(R.string.text_scanning);
+        mInfoView.setText("Writing to data" + (fileNumber+1) + ".csv");
+        csvFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)+dataFolder, filePrefix+(fileNumber+1)+".csv");
+        numValues = 0;
         mSweepTime = SystemClock.uptimeMillis();
         mSweepBefore = true;
     }
@@ -390,7 +363,8 @@ public class RadarScanView extends View implements SensorEventListener {
      */
     public void stopSweep() {
         mSweepTime = 0L;
-        mInfoView.setText("");
+        fileNumber = fileNumber + 1;
+        mInfoView.setText("Stopped");
     }
 
 }

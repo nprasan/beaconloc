@@ -75,17 +75,9 @@ public class ScanRadarFragment extends ScanFragment {
 
         setupToolbar();
 
-        mRadar.setUseMetric(true);
         mRadar.setDistanceView(mDistView);
 
         return fragmentView;
-    }
-
-    @Override
-    public void onPause() {
-        mSensorManager.unregisterListener(mRadar, accSensor);
-        mSensorManager.unregisterListener(mRadar, magnetSensor);
-        super.onPause();
     }
 
     @Override
@@ -109,9 +101,6 @@ public class ScanRadarFragment extends ScanFragment {
     @Override
     public void onResume() {
         super.onResume();
-        if (mBeaconManager.isBound(this)) mBeaconManager.setBackgroundMode(false);
-        mSensorManager.registerListener(mRadar, accSensor, SensorManager.SENSOR_DELAY_GAME);
-        mSensorManager.registerListener(mRadar, magnetSensor, SensorManager.SENSOR_DELAY_GAME);
     }
 
     private void setupToolbar() {
