@@ -292,7 +292,7 @@ public class RadarScanView extends View {
                     distIndex = dBeaconMinorId - 64001;
                     if(distIndex == 4)
                         distIndex = 3;
-                    dist[distIndex] = dBeacon.getDistance()*3;
+                    dist[distIndex] = dBeacon.getDistance();
                     System.out.println(distIndex + ":" + dist[distIndex]);
                 }
             }
